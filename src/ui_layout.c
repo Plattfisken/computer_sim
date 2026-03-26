@@ -1,4 +1,5 @@
 #include "ui_layout.h"
+#include "computer_sim.h"
 
 #define CLAY_IMPLEMENTATION
 #include "../third_party/clay.h"
@@ -9,12 +10,16 @@
 #define FONT_SIZE 16
 #define UI_OUTER_BACKGROUND_COLOR (Clay_Color){ 100, 100, 100, 255 }
 #define UI_INNER_BACKGROUND_COLOR (Clay_Color){ 170, 170, 170, 255 }
-//#define UI_INNER_BACKGROUND_COLOR (Clay_Color){ 255, 0, 0, 255 }
+#define BUTTON_COLOR (Clay_Color){ 100, 100, 100, 255 }
+#define BUTTON_HOVERED_COLOR (Clay_Color){ 100, 100, 200, 255 }
+#define ROWS_PER_PAGE 16
+#define COLS_PER_PAGE 8
+
 
 struct UiLayoutState {
     Clay_Context *clay_context;
-    //Clay_Arena clay_arena;
     Font font;
+    int current_memory_page;
 };
 
 #include "../third_party/clay_renderer_raylib.c"
@@ -54,6 +59,45 @@ void reload_ui_engine(UiLayoutState *state) {
     Clay_SetDebugModeEnabled(true);
 }
 
+#define draw_text_default(str, fs) draw_text_default_(CLAY_STRING(str), fs)
+static void draw_text_default_(Clay_String s, int font_size) {
+    CLAY_TEXT(s, CLAY_TEXT_CONFIG({
+        .fontId = 0,
+        .fontSize = font_size,
+        .textColor = { 0, 0, 0, 255 },
+    }));
+}
+
+#define draw_button(label) draw_button_(CLAY_STRING(label))
+static bool draw_button_(Clay_String label) {
+    bool result = false;
+    CLAY(CLAY_SID(label), { .backgroundColor = Clay_Hovered() ? BUTTON_HOVERED_COLOR : BUTTON_COLOR }) {
+        draw_text_default_(label, FONT_SIZE);
+        if(Clay_Hovered() && Clay_GetCurrentContext()->pointerInfo.state == CLAY_POINTER_DATA_PRESSED_THIS_FRAME) {
+            result = true;
+        }
+    }
+    return result;
+}
+
+static void draw_uint8(uint8_t num, UT_Arena *arena, UT_String append) {
+    int num_chars = 4;
+    // + 1 because of snprintf forces last character to be null
+    char *buf = UT_arena_alloc(arena, num_chars + append.length + 1, 1);
+    snprintf(buf, num_chars + append.length + 1, "0x%02x%.*s", num, (int)append.length, append.data);
+    Clay_String num_string = { .length = num_chars + append.length, .chars = buf };
+    draw_text_default_(num_string, FONT_SIZE);
+}
+
+static void draw_uint16(uint16_t num, UT_Arena *arena, UT_String append) {
+    int num_chars = 6;
+    // + 1 because of snprintf forces last character to be null
+    char *buf = UT_arena_alloc(arena, num_chars + append.length + 1, 1);
+    snprintf(buf, num_chars + append.length + 1, "0x%04x%.*s", num, (int)append.length, append.data);
+    Clay_String num_string = { .length = num_chars + append.length, .chars = buf };
+    draw_text_default_(num_string, FONT_SIZE);
+}
+
 // NOTE: this function should be called inbetween calls to raylibs BeginDrawing() and EndDrawing()
 void render_ui_layout(AppState *app_state, UiLayoutState *my_state) {
     UT_Arena *frame_arena = UT_arena_create();
@@ -82,8 +126,7 @@ void render_ui_layout(AppState *app_state, UiLayoutState *my_state) {
         CLAY(CLAY_ID("Computer view"), {
             .layout = {
                 .sizing = {
-                    .width = CLAY_SIZING_PERCENT(0.66),
-                    //.width = CLAY_SIZING_PERCENT(0),
+                    .width = CLAY_SIZING_PERCENT(0.5),
                     .height = CLAY_SIZING_GROW(0),
                 }
             },
@@ -102,27 +145,42 @@ void render_ui_layout(AppState *app_state, UiLayoutState *my_state) {
             .backgroundColor = UI_INNER_BACKGROUND_COLOR,
             .cornerRadius = CLAY_CORNER_RADIUS(8),
         }) {
-                CLAY_TEXT(CLAY_STRING("Registers: "), CLAY_TEXT_CONFIG({
-                    .fontId = 0,
-                    .fontSize = 22,
-                    .textColor = { 0, 0, 0, 255 },
-                }));
-                for(uint32_t i = 0; i < UT_ARRAY_LENGTH(app_state->computer.registers); ++i) {
-                    char *buf = UT_arena_alloc(frame_arena, 11, 1);
-                    snprintf(buf, 11, "0x%08x", app_state->computer.registers[i]);
-                    Clay_String register_string = { .length = 10, .chars = buf };
-                    CLAY_TEXT(register_string, CLAY_TEXT_CONFIG({
-                                .fontId = 0,
-                                .fontSize = FONT_SIZE,
-                                .textColor = { 0, 0, 0, 255 },
-                                }));
+            draw_text_default("Registers: ", 20);
+            for(uint32_t i = 0; i < UT_ARRAY_LENGTH(app_state->computer.registers); ++i) {
+                draw_uint16(app_state->computer.registers[i], frame_arena, UT_STR(""));
+            }
+            draw_text_default("Program Counter: ", 20);
+            draw_uint16(app_state->computer.program_counter, frame_arena, UT_STR(""));
+            draw_text_default("Memory: ", 20);
+            uint16_t address = ROWS_PER_PAGE * COLS_PER_PAGE * my_state->current_memory_page;
+            for(uint32_t row = 0; row < ROWS_PER_PAGE; ++row) {
+                CLAY(CLAY_IDI("Memory row", row), { .layout = { .layoutDirection = CLAY_LEFT_TO_RIGHT, .childGap = 4 }}) {
+                    draw_uint16(address, frame_arena, UT_STR(":"));
+                    for(uint32_t col = 0; col < COLS_PER_PAGE; ++col) {
+                        uint8_t byte_value = *(uint8_t *)computer_pointer_from_virtual_address(&app_state->computer, address++);
+                        draw_uint8(byte_value, frame_arena, UT_STR(""));
+                    }
                 }
+            }
+            CLAY(CLAY_ID("Button row"), { .layout = { .sizing = { .width = CLAY_SIZING_GROW() }, .layoutDirection = CLAY_LEFT_TO_RIGHT }}) {
+                if(draw_button("Prev page")) {
+                    if(my_state->current_memory_page > 0)
+                        --my_state->current_memory_page;
+                }
+                CLAY_AUTO_ID({ .layout = { .sizing = { .width = CLAY_SIZING_GROW(), .height = CLAY_SIZING_GROW() }}}) {}
+                if(draw_button("Next page")) {
+                    //if(my_state->current_memory_page < a)
+                    ++my_state->current_memory_page;
+                }
+            }
         }
     }
     Clay_RenderCommandArray render_commands = Clay_EndLayout();
     Clay_Raylib_Render(render_commands, &my_state->font, frame_arena);
     UT_arena_free(frame_arena);
 }
+// TODO: is this really the way to do this..?
+#include "computer_sim.c"
 // Implementations in this translation unit
 #define USEFUL_THINGS_IMPLEMENTATION
 #include "../third_party/useful_things.h"

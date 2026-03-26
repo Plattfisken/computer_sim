@@ -109,7 +109,7 @@ typedef struct {
 } UT_String;
 
 // for use with string literals, not char pointers. sizeof("String") gives the length of the string plus one for null terminator
-#define UT_STR(s) (String){ .data = (s), .length = sizeof(s) - 1 }
+#define UT_STR(s) (UT_String){ .data = (s), .length = sizeof(s) - 1 }
 UT_String UT_make_string(char *s, int length, UT_Arena *arena);
 UT_String UT_copy_string(UT_String s, UT_Arena *arena);
 UT_String UT_slice_to_string(char *p, int length);
